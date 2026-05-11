@@ -64,7 +64,7 @@ class AiMiSi(Tuanzi):
         if self.teleport_used or self.finished:
             return
         tile = race.locate_entity(self)
-        if tile is None or tile < 16:
+        if tile is None or tile < 17:
             return
         if not self.reached_mid:
             self.reached_mid = True
