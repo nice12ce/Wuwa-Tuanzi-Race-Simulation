@@ -191,11 +191,12 @@ class BaDawang(Entity):
 class Race:
     def __init__(self, mode='first', tuanzi_names=None, start_cell=None, verbose=False):
         """
-        mode: 'first' 上半轮次，'second' 下半轮次
-        tuanzi_names: 6个有效团子名称的列表，若为None则使用默认名单
-        start_cell: 下半轮次专用，字典 { 格号: [实体名称/对象列表(底→顶)] }
-                    若为None（且mode='second'），则使用内置默认配置。
+            mode: 'first' 上半轮次，'second' 下半轮次
+            tuanzi_names: 6个有效团子名称的列表，若为None则使用默认名单
+            start_cell: 下半轮次专用，字典 { 格号: [实体名称/对象列表(底→顶)] }
+                        若为None（且mode='second'），则使用内置默认配置。
         """
+
         self.mode = mode
         self.verbose = verbose
         self.round = 0
@@ -223,16 +224,10 @@ class Race:
                 self.cell[START_TILE].append(t)
             self.bu.active = False
             self.bu.pos = FINISH_TILE
-        else:  # second
-            # 下半：使用 start_cell 或默认配置
+        else:   # mode == 'second'
+            # 下半：必须提供 start_cell，否则报错
             if start_cell is None:
-                # 内置默认配置（符合你的要求）
-                start_cell = {
-                    32: ["布大王", "爱弥斯", "守岸人"],
-                    30: ["千咲"],
-                    29: ["莫宁", "琳奈"],
-                    28: ["珂莱塔"],
-                }
+                raise ValueError("下半场模式下必须提供 start_cell 参数来指定各格子的起始堆叠")
             self._apply_start_cell(start_cell)
 
     def _apply_start_cell(self, cell_dict):
@@ -638,7 +633,7 @@ def run_simulation(mode, num_simulations=1000, tuanzi_names=None, start_cell=Non
 if __name__ == "__main__":
     # ★★★ 通过修改 MODE 切换上半/下半模拟 ★★★
     MODE = 'second'          # 'first' 或 'second'
-    SIM_COUNT = 200          # 模拟次数
+    SIM_COUNT = 100000          # 模拟次数
     VERBOSE_SINGLE = True    # 可单独运行一局查看详细日志
 
     # 参赛选手（默认即为这六人，可自定义）
