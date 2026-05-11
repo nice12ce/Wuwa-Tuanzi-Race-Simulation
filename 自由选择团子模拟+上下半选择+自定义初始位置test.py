@@ -190,48 +190,35 @@ class BaDawang(Entity):
 # ====================== 比赛引擎 ======================
 class Race:
     def __init__(self, mode='first', tuanzi_names=None, start_cell=None, verbose=False):
-        """
-            mode: 'first' 上半轮次，'second' 下半轮次
-            tuanzi_names: 6个有效团子名称的列表，若为None则使用默认名单
-            start_cell: 下半轮次专用，字典 { 格号: [实体名称/对象列表(底→顶)] }
-                        若为None（且mode='second'），则使用内置默认配置。
-        """
-
         self.mode = mode
         self.verbose = verbose
         self.round = 0
         self.champion = None
         self.marked_entities = set()
 
-        # ----- 参赛名单（默认6人） -----
+        # ----- 参赛名单 -----
         if tuanzi_names is None:
             tuanzi_names = ["千咲", "莫宁", "琳奈", "爱弥斯", "守岸人", "珂莱塔"]
         if len(tuanzi_names) != 6:
             raise ValueError(f"必须恰好6名团子参赛，提供了{len(tuanzi_names)}人")
 
-        # ----- 创建团子对象，并建立名称→对象的映射 -----
         self.tuanzis = [create_tuanzi(name) for name in tuanzi_names]
         self.name_to_tuanzi = {t.name: t for t in self.tuanzis}
 
-        # ----- 布大王（始终参战） -----
         self.bu = BaDawang()
 
-        # ----- 初始化格子 -----
         self.cell = {i: [] for i in range(1, MAP_SIZE + 1)}
         if mode == 'first':
-            # 上半：全部放在起点1（堆叠顺序稍后由第一回合决定）
             for t in self.tuanzis:
                 self.cell[START_TILE].append(t)
             self.bu.active = False
             self.bu.pos = FINISH_TILE
         else:   # mode == 'second'
-            # 下半：必须提供 start_cell，否则报错
             if start_cell is None:
                 raise ValueError("下半场模式下必须提供 start_cell 参数来指定各格子的起始堆叠")
             self._apply_start_cell(start_cell)
 
     def _apply_start_cell(self, cell_dict):
-        """将 cell_dict 应用到当前棋盘（名称→对象）"""
         self.cell = {i: [] for i in range(1, MAP_SIZE + 1)}
         for tile, entity_list in cell_dict.items():
             for e_desc in entity_list:
@@ -242,14 +229,12 @@ class Race:
                         obj = self.name_to_tuanzi.get(e_desc)
                         if obj is None:
                             raise ValueError(f"start_cell 中的团子 '{e_desc}' 不在参赛名单中")
-                else:   # 已是实体对象
+                else:
                     obj = e_desc
                 self.cell[tile].append(obj)
-
-        # 同步布大王当前位置
         bu_tile = self.locate_entity(self.bu)
         self.bu.pos = bu_tile if bu_tile is not None else FINISH_TILE
-        self.bu.active = False   # 下半初始不激活
+        self.bu.active = False
 
     def log(self, msg):
         if self.verbose:
@@ -261,7 +246,63 @@ class Race:
                 return tile
         return None
 
-    # -------------------- 移动核心 --------------------
+    # -------------------- 移动整格实体的新方法 --------------------
+    def _move_all_entities(self, tile, delta):
+        """移动该格内所有实体（含布大王），返回是否冲线"""
+        entities = self.cell[tile][:]
+        self.cell[tile] = []
+        tuanzis_in_group = [e for e in entities if e.is_tuanzi()]
+        bu_in_group = [e for e in entities if isinstance(e, BaDawang)]
+
+        if self.mode == 'first':
+            new_tile = tile + delta
+            if new_tile >= FINISH_TILE:
+                if self.champion is None and tuanzis_in_group:
+                    self.champion = tuanzis_in_group[-1].name
+                for t in tuanzis_in_group:
+                    t.finished = True
+                # 布大王留在终点附近，放回32底部
+                for bu in bu_in_group:
+                    self.cell[FINISH_TILE].insert(0, bu)
+                    bu.pos = FINISH_TILE
+                return True
+            new_tile = max(1, new_tile)
+        else:  # second
+            for t in tuanzis_in_group:
+                if delta > 0:
+                    t.total_progress += delta
+
+            win_flag = False
+            for t in tuanzis_in_group:
+                if not t.finished:
+                    old_progress = t.total_progress - delta
+                    if old_progress < 32 and t.total_progress >= 32:
+                        win_flag = True
+                        break
+
+            raw_new = tile + delta
+            if raw_new >= FINISH_TILE + 1:
+                new_tile = (raw_new - 1) % MAP_SIZE + 1
+            else:
+                new_tile = raw_new
+
+            if win_flag:
+                if self.champion is None and tuanzis_in_group:
+                    self.champion = tuanzis_in_group[-1].name
+                for t in tuanzis_in_group:
+                    t.finished = True
+                for bu in bu_in_group:
+                    self.cell[new_tile].insert(0, bu)
+                    bu.pos = new_tile
+                return True
+
+        # 未冲线：所有实体放入新格
+        self.cell[new_tile].extend(entities)
+        for bu in bu_in_group:
+            bu.pos = new_tile
+        return False
+
+    # -------------------- 移动核心（原团子组） --------------------
     def move_group(self, group, from_tile, delta):
         for e in group:
             self.cell[from_tile].remove(e)
@@ -352,7 +393,7 @@ class Race:
                     if self.verbose:
                         print(f"  ✨ 绯雪与布大王相遇！buff激活")
 
-    # -------------------- 格子效果 --------------------
+    # -------------------- 格子效果（已修改红绿部分） --------------------
     def apply_tile_effect(self, tile):
         if tile in RIFT_TILES:
             normal = [e for e in self.cell[tile] if e.is_tuanzi()]
@@ -365,17 +406,33 @@ class Race:
 
         if tile in GREEN_TILES or tile in RED_TILES:
             delta = 1 if tile in GREEN_TILES else -1
-            normal = [e for e in self.cell[tile] if e.is_tuanzi()]
-            if not normal:
-                return
-            self.log(f"  {'🟢' if delta == 1 else '🔴'} 格子{tile}效果！全组{'前进' if delta == 1 else '后退'}1格。")
-            self.move_group(normal, tile, delta)
-            for e in normal:
-                if isinstance(e, LuHesi) and not e.finished:
-                    extra = 3 if tile in GREEN_TILES else -1
-                    if self.verbose:
-                        print(f"    🍬 陆・赫斯额外{'前进' if extra > 0 else '后退'}{abs(extra)}格！")
-                    self.move_single_entity(e, extra, trigger_effects=False)
+            occupants = self.cell[tile][:]
+            has_bu = self.bu in occupants
+
+            if has_bu:
+                self.log(f"  {'🟢' if delta == 1 else '🔴'} 格子{tile}效果！全组（含布大王）{'前进' if delta == 1 else '后退'}1格。")
+                finished = self._move_all_entities(tile, delta)
+                if finished:
+                    return
+                # 陆・赫斯额外移动（仅对团子）
+                for e in occupants:
+                    if isinstance(e, LuHesi) and not e.finished:
+                        extra = 3 if tile in GREEN_TILES else -1
+                        if self.verbose:
+                            print(f"    🍬 陆・赫斯额外{'前进' if extra > 0 else '后退'}{abs(extra)}格！")
+                        self.move_single_entity(e, extra, trigger_effects=False)
+            else:
+                normal = [e for e in occupants if e.is_tuanzi()]
+                if not normal:
+                    return
+                self.log(f"  {'🟢' if delta == 1 else '🔴'} 格子{tile}效果！全组{'前进' if delta == 1 else '后退'}1格。")
+                self.move_group(normal, tile, delta)
+                for e in normal:
+                    if isinstance(e, LuHesi) and not e.finished:
+                        extra = 3 if tile in GREEN_TILES else -1
+                        if self.verbose:
+                            print(f"    🍬 陆・赫斯额外{'前进' if extra > 0 else '后退'}{abs(extra)}格！")
+                        self.move_single_entity(e, extra, trigger_effects=False)
 
     # -------------------- 排名与最后一名 --------------------
     def get_ranking(self):
@@ -618,7 +675,6 @@ class Race:
 
 # ====================== 便捷模拟控制 ======================
 def run_simulation(mode, num_simulations=1000, tuanzi_names=None, start_cell=None):
-    """进行指定模式的多次模拟并输出胜率统计（无随机生成参赛选手）"""
     wins = defaultdict(int)
     for _ in range(num_simulations):
         r = Race(mode=mode, tuanzi_names=tuanzi_names, start_cell=start_cell, verbose=False)
@@ -631,17 +687,12 @@ def run_simulation(mode, num_simulations=1000, tuanzi_names=None, start_cell=Non
 
 # ====================== 测试入口 ======================
 if __name__ == "__main__":
-    # ★★★ 通过修改 MODE 切换上半/下半模拟 ★★★
-    MODE = 'second'          # 'first' 或 'second'
-    SIM_COUNT = 100000          # 模拟次数
-    VERBOSE_SINGLE = True    # 可单独运行一局查看详细日志
+    MODE = 'second'          # 选择 'first' 或 'second'
+    SIM_COUNT = 100000
+    VERBOSE_SINGLE = True
 
-    # 参赛选手（默认即为这六人，可自定义）
     my_tuanzi_names = ["千咲", "莫宁", "琳奈", "爱弥斯", "守岸人", "珂莱塔"]
 
-    # 下半场起始位置（仅当 MODE='second' 时有效，None 则使用内置默认配置）
-    # 若要自定义，格式为：{ 格子号: [实体名称 或 对象(底→顶)] }
-    # 示例：
     custom_start = {
          32: ["布大王", "珂莱塔"],
          30: ["琳奈","千咲"],
@@ -649,13 +700,9 @@ if __name__ == "__main__":
          28: ["守岸人"],
     }
 
-    # custom_start = None   # 使用内置默认值
-
-    # ---------- 运行统计 ----------
     print(f"开始模拟：{MODE}半场，次数 {SIM_COUNT}，参赛选手 {my_tuanzi_names}")
     run_simulation(MODE, SIM_COUNT, my_tuanzi_names, custom_start)
 
-    # ---------- 可选的单局详细输出 ----------
     if VERBOSE_SINGLE:
         print("\n===== 单局详细演示 =====")
         r = Race(mode=MODE, tuanzi_names=my_tuanzi_names, start_cell=custom_start, verbose=True)
